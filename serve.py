@@ -74,7 +74,7 @@ vectorstore = Chroma.from_documents(docs, embeddings)
 # ToDo: check similarity 
 retriever = vectorstore.as_retriever(
     search_type="similarity",
-    search_kwargs={"k": 1},
+    search_kwargs={"k": 3},
 )
 
 #retriever.invoke("id like to buy apples and oranges at the supermarket later today")
@@ -91,41 +91,43 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 
 message = """
-A visually impared user wants to use a certain app function.
-You need to determine what function the user wants to use based on the context the user provides.
-Only return the label obtained from the context.
+You are an assistant helping users find the right app functions.
+You are given a command from the user and a limited set of the app's functionalities.
+Do none of the functions seem related to the command? Then ask the user to clarify.
+Return ONLY THE LABEL of the function if you are confident that the context matches the function.
+This label will be used by the app.
 
-Question:
-{question}
+Command:
+{command}
 
-Context:
-{context}
+Functions:
+{functions}
 """
 
 prompt = ChatPromptTemplate.from_messages([("human", message)])
 
-chain = {"question": RunnablePassthrough(), "context": retriever} | prompt | model | parser
+chain = {"command": RunnablePassthrough(), "functions": retriever} | prompt | model | parser
 
 #response = chain.invoke("i want to know how many calories this cereal has")
-response = chain.invoke("i want to go to my favorite supermarket at 16:00")
-print(response)
+# response = chain.invoke("i want to go to my favorite supermarket at 16:00")
+# print(response)
 
-# # App definition
-# app = FastAPI(
-#   title="LangChain Server",
-#   version="1.0",
-#   description="A simple API server using LangChain's Runnable interfaces",
-# )
+# App definition
+app = FastAPI(
+  title="LangChain Server",
+  version="1.0",
+  description="A simple API server using LangChain's Runnable interfaces",
+)
 
-# # Adding chain route for API
+# Adding chain route for API
 
-# add_routes(
-#     app,
-#     chain,
-#     path="/chain",
-# )
+add_routes(
+    app,
+    chain,
+    path="/chain",
+)
 
-# if __name__ == "__main__":
-#     import uvicorn
+if __name__ == "__main__":
+    import uvicorn
 
-#     uvicorn.run(app, host="localhost", port=8000)
+    uvicorn.run(app, host="localhost", port=8000)
