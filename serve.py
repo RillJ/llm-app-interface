@@ -15,70 +15,25 @@
 # specific language governing permissions and limitations
 # under the License.
 
+from tools import app_functions
+
 from typing import List
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from langserve import add_routes
-from langchain_core.documents import Document
-from langchain_chroma import Chroma
-from langchain_openai import OpenAIEmbeddings
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langchain.agents import create_tool_calling_agent
+from langchain.agents import AgentExecutor
 
 load_dotenv()
 
-# Create knowledge of app functions
-docs = [
-    # Document(
-    #     page_content="""
-    #     An app that aims to enhance spatial navigation for visually impaired individuals by developing an intelligent AI-driven system that aids in grocery shopping.
-    #     At the core of this is a bracelet equipped with vibration feedback. By varying the intensity of the vibration, the app guides users to products in a supermarket.
-    #     The app is designed to interface with the bracelet. The goal is to empower blind users with greater independence and ease in their supermarket hopping experiences.
-    #     """,
-    #     metadata={"type": "app-description"},
-    # ),
-    Document(
-        page_content="A list where a user can add products they want to aquire at the supermarket.",
-        metadata={"label": "grocery-list"},
-    ),
-    Document(
-        page_content="Enables the user to scan barcodes of products to gain detailed nutritional information about them.",
-        metadata={"label": "barcode-scanner"},
-    ),
-    Document(
-        page_content="Allows the user to save their favorite supermarkets and start GPS navigation to this supermarket.",
-        metadata={"label": "navigation"},
-    ),
-    Document(
-        page_content="Can identify products in a supermarket and hands of the user in real time to help finding the right products.",
-        metadata={"label": "object-and-hand-recognition"},
-    ),
-]
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-vectorstore = Chroma.from_documents(docs, embeddings)
-
-# metadata_field_info = [
-#     AttributeInfo(
-#         name="type",
-#         description="Whether this document describes the app itself or functionality within the app.",
-#         type="string",
-#     ),
-#     AttributeInfo(
-#         name="label",
-#         description="Description of certain functionality within the app.",
-#         type="string",
-#     ),
-# ]
-
-# ToDo: check similarity 
-retriever = vectorstore.as_retriever(
-    search_type="similarity",
-    search_kwargs={"k": 3},
-)
-
-#retriever.invoke("id like to buy apples and oranges at the supermarket later today")
-#retriever.invoke("find right products")
+# If we want, we can use other tools.
+# Once we have all the tools we want, we can put them in a list that we will reference later.
+tools = [app_functions]
 
 # Create model
 model = ChatOpenAI()
@@ -90,27 +45,29 @@ parser = StrOutputParser()
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 
-message = """
+# Define memory
+memory = SqliteSaver.from_conn_string(":memory:")
+config = {"configurable": {"thread_id": "abc123"}}
+
+system = """
 You are an assistant helping users find the right app functions.
 You are given a command from the user and a limited set of the app's functionalities.
 Do none of the functions seem related to the command? Then ask the user to clarify.
 Return ONLY THE LABEL of the function if you are confident that the context matches the function.
 This label will be used by the app.
-
-Command:
-{command}
-
-Functions:
-{functions}
 """
 
-prompt = ChatPromptTemplate.from_messages([("human", message)])
+prompt = ChatPromptTemplate.from_messages([
+    ("system", system),
+    MessagesPlaceholder(variable_name="chat_history", optional=True),
+    ("user", "{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad")])
 
-chain = {"command": RunnablePassthrough(), "functions": retriever} | prompt | model | parser
+# Create agent
+agent = create_tool_calling_agent(model, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-#response = chain.invoke("i want to know how many calories this cereal has")
-# response = chain.invoke("i want to go to my favorite supermarket at 16:00")
-# print(response)
+# chain = {"command": RunnablePassthrough(), "functions": retriever} | prompt | model | parser
 
 # App definition
 app = FastAPI(
@@ -123,7 +80,7 @@ app = FastAPI(
 
 add_routes(
     app,
-    chain,
+    agent_executor,
     path="/chain",
 )
 
