@@ -1,10 +1,13 @@
+import json
 from dotenv import load_dotenv
-from langchain.pydantic_v1 import BaseModel, Field
-from langchain.tools import BaseTool, StructuredTool, tool
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
-from langchain.tools.retriever import create_retriever_tool
+from langchain.pydantic_v1 import BaseModel, Field
+from langchain.tools import BaseTool, StructuredTool, tool
+from langchain_core.prompts import PromptTemplate, format_document
+from langchain_core.documents import Document
+from typing import Sequence
 
 load_dotenv()
 
@@ -52,19 +55,21 @@ vectorstore = Chroma.from_documents(docs, embeddings)
 #     ),
 # ]
 
-vectorstore = Chroma.from_documents(docs, embeddings)
-
 # ToDo: check similarity 
 retriever = vectorstore.as_retriever(
     search_type="similarity",
     search_kwargs={"k": 3},
 )
 
-app_functions = create_retriever_tool(
-    retriever,
-    "AppFunctions",
-    "Gives the three most relevant app functions based on the input string.",
-)
+@tool
+def app_functions(query: str) -> str:
+    """Gives the most relevant app functions and accompanying labels based on the input command"""
+    docsList = retriever.invoke(query)
+    strList =[]
+    # Export the document content as well as its metadata
+    for doc in docsList:
+        strList.append({'document' : doc.page_content ,'metadata' : doc.metadata})
+    return json.dumps(strList)
 
 # print(app_functions.name)
 # print(app_functions.description)
