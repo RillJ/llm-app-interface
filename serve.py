@@ -20,19 +20,19 @@ from tools import app_functions
 from typing import Any, List, Union
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from langserve import add_routes
+from langchain.pydantic_v1 import BaseModel, Field
+from langchain.tools import BaseTool, StructuredTool, tool
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.prompts import MessagesPlaceholder
-from langchain.agents.format_scratchpad.openai_tools import format_to_openai_tool_messages
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, FunctionMessage, HumanMessage
-from langchain_openai import ChatOpenAI
-from langserve import add_routes
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langchain.agents import create_tool_calling_agent
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain.agents import AgentExecutor
-from langchain_core.utils.function_calling import format_tool_to_openai_tool # LangChainDeprecationWarning: The function `format_tool_to_openai_tool` was deprecated in LangChain 0.1.16 and will be removed in 0.3.0. Use langchain_core.utils.function_calling.convert_to_openai_tool() instead.
 from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
-from langserve.pydantic_v1 import BaseModel, Field
+from langchain.agents.format_scratchpad.openai_tools import format_to_openai_tool_messages
 
 load_dotenv()
 
@@ -42,7 +42,7 @@ tools = [app_functions]
 
 # Create OpenAI model
 model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=False)
-model_with_tools = model.bind(tools=[format_tool_to_openai_tool(tool) for tool in tools])
+model_with_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in tools])
 
 # Create parser
 parser = StrOutputParser()
@@ -57,8 +57,10 @@ config = {"configurable": {"thread_id": "abc123"}}
 
 # Define prompt
 system = """
-You are an assistant integrated with an accessibility app designed to help visually impaired users with their supermarket shopping.
-Your task is to help the user activate the correct function within the app based on their command. Follow these steps:
+You are an assistant integrated with various accessibility apps designed to help visually impaired users.
+Your task is to help the user activate the correct function within an app based on their command.
+
+Follow these steps:
 1. Match Function: Identify the app function that best matches the user's command.
 2. Output Format: Return only the function label in the format: label=<app label>. Do not include any additional information or explanations.
 3. Clarification Loop:
@@ -115,15 +117,9 @@ app = FastAPI(
   description="A simple API server using LangChain's Runnable interfaces",
 )
 
-# We need to add these input/output schemas because the current AgentExecutor is lacking in schemas.
 class Input(BaseModel):
+    """We need to add these input/output schemas because the current AgentExecutor is lacking in schemas."""
     input: str
-    # The field extra defines a chat widget.
-    # Please see documentation about widgets in the main README.
-    # The widget is used in the playground.
-    # Keep in mind that playground support for agents is not great at the moment.
-    # To get a better experience, you'll need to customize the streaming output
-    # for now.
     chat_history: List[Union[HumanMessage, AIMessage, FunctionMessage]] = Field(
         ...,
         extra={"widget": {"type": "chat", "input": "input", "output": "output"}},
