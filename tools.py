@@ -20,7 +20,10 @@ docs = [
         metadata={"app_id": 1, "type": "app", "name": "Spatial Navigator"},
     ),
     Document(
-        page_content="A list where a user can add products they want to aquire at the supermarket.",
+        page_content="""
+        A list where a user can add products they want to aquire at the supermarket.
+        Extra Feature: Return the product(s) that need to be added, appended with either + (to add) or - (to remove), including the amount.
+        Example: [+4]Jonagold Apple; [-1]Quaker Oats""",
         metadata={"app_id": 1, "type": "function", "label": "grocery-list"},
     ),
     Document(
@@ -28,11 +31,13 @@ docs = [
         metadata={"app_id": 1, "type": "function", "label": "barcode-scanner"},
     ),
     Document(
-        page_content="Allows the user to save their favorite supermarkets and start GPS navigation to this supermarket.",
+        page_content="""
+        Allows the user to save their favorite supermarkets and start GPS navigation to this supermarket.
+        Extra Feature: If the user mentions a name of a supermarket, return the name of the supermarket.""",
         metadata={"app_id": 1, "type": "function", "label": "navigation"},
     ),
     Document(
-        page_content="Can identify products in a supermarket and hands of the user in real time to help finding the right products.",
+        page_content="Can identify products in a supermarket and hands of the user in real time to help find the right products.",
         metadata={"app_id": 1, "type": "function", "label": "object-and-hand-recognition"},
     ),
 ]

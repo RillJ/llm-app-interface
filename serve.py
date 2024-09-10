@@ -19,6 +19,7 @@ from tools import app_functions
 
 import os
 import jwt
+import uvicorn
 from dotenv import load_dotenv
 from passlib.context import CryptContext
 from typing import Any, List, Union, Annotated
@@ -56,8 +57,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 
 # Define memory
-memory = SqliteSaver.from_conn_string(":memory:")
-config = {"configurable": {"thread_id": "abc123"}}
+# memory = SqliteSaver.from_conn_string(":memory:")
+# config = {"configurable": {"thread_id": "abc123"}}
 
 # Define prompt
 system = """
@@ -66,17 +67,23 @@ Your task is to help the user activate the correct function within an app based 
 
 Follow these steps:
 1. Match Function: Identify the app function that best matches the user's command.
-2. Output Format: Return only the function label in the format: label=<app label>. Do not include any additional information or explanations.
+2. Output Format:
+    - Return only the function label in the format: label=<app-label>
+    - If the function of this app has an Extra Feature, follow the instructions and return the results in the format: label=<app-label>; extra=<results>
+    - Do not include any additional information or explanations.
 3. Clarification Loop:
-   - If you are not confident which function matches the command, ask the user for more details.
-   - Continue this process until you can confidently identify the correct function.
+    - If you are not confident which function matches the command, ask the user for more details.
+    - Continue this process until you can confidently identify the correct function.
 4. Strict Format Requirement: Only return the function label in the specified format. Do not include any other text or explanation.
 
 Example Workflows:
     User Command: "Can you help me look for the apples?"
         You found some relevant functions within the app.
-        If confident, respond with: label=object-recognition
+        If confident, respond with: label=<object-recognition>
         If not confident, ask: "Do you want to find the apple near you or want to navigate to your favorite supermarket?"
+    User Command: "I need 6 apples and 2 packs of milk."
+        You found a relevant function within the app that has an Extra Feature.
+        Respond with: label=<grocery-list>; extra=<[+4]Apple; [+2]Milk>
     User Command: "I haven't spoken to my dad in a while, can you call him?"
         You did not find any relevant functions within the app, or the user is asking you something unrelated.
         Since you are not confident, ask: "At the moment, it seems that I cannot assist you with that. Can you clarify what you want?"
@@ -260,6 +267,4 @@ async def invoke_with_auth(
     return await api_handler.invoke(request, server_config=config)
 
 if __name__ == "__main__":
-    import uvicorn
-
     uvicorn.run(app, host="localhost", port=8000)
