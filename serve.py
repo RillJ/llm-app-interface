@@ -16,11 +16,12 @@
 # under the License.
 
 from tools import app_functions
+#from prompts import system_prompt
 
 import os
-import jwt
+import jwt #pyjwt
 import uvicorn
-from dotenv import load_dotenv
+from dotenv import load_dotenv #python-dotenv
 from passlib.context import CryptContext
 from typing import Any, List, Union, Annotated
 from jwt.exceptions import InvalidTokenError
@@ -28,40 +29,35 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from langserve import APIHandler
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import MessagesState
+from langchain_core.messages import HumanMessage, SystemMessage, FunctionMessage, AIMessage
+from langgraph.graph import START, END, StateGraph
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import tools_condition
+from langgraph.prebuilt import ToolNode
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.messages import AIMessage, FunctionMessage, HumanMessage
+from IPython.display import Image, display
+#from langchain_core.messages import AIMessage, FunctionMessage, HumanMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain.pydantic_v1 import BaseModel, Field
+#from pydantic.v1 import BaseModel
 from langchain.agents import AgentExecutor
 from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
 from langchain.agents.format_scratchpad.openai_tools import format_to_openai_tool_messages
 
+
+# Get environment variables (API keys and such)
 load_dotenv()
 
-# If we want, we can use other tools.
-# Once we have all the tools we want, we can put them in a list that we will reference later.
+# Create LLM model
 tools = [app_functions]
-
-# Create OpenAI model
 model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=False)
 model_with_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in tools])
 
-# Create parser
-parser = StrOutputParser()
-
-# RAG
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-
-# Define memory
-# memory = SqliteSaver.from_conn_string(":memory:")
-# config = {"configurable": {"thread_id": "abc123"}}
-
 # Define prompt
-system = """
+system_prompt = """
 You are an assistant integrated with various accessibility apps designed to help visually impaired users.
 Your task is to help the user activate the correct function within an app based on their command.
 
@@ -92,36 +88,68 @@ Example Workflows:
         Respond with: "While I'd love to talk, my job is to assist you with the accessibility app. How can I help you today?"
 """
 
-prompt = ChatPromptTemplate.from_messages([
-    ("system", system),
-    MessagesPlaceholder(variable_name="chat_history", optional=True),
-    ("user", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad")])
+#region LangGraph
+# Agents
+def assistant(state: MessagesState):
+   return {"messages": [model_with_tools.invoke([system_prompt] + state["messages"])]}
 
-# Trim prompts
-def prompt_trimmer(messages: List[Union[HumanMessage, AIMessage, FunctionMessage]]):
-    """Trims the prompt to a reasonable length."""
-    return messages[-10:] # Keep last 10 messages
-    # Keep in mind that when trimming we may want to keep the system message!
+# Graph
+builder = StateGraph(MessagesState)
 
-# Create agent
-# agent = create_tool_calling_agent(model, tools, prompt)
-agent = (
-    {
-        "input": lambda x: x["input"],
-        "agent_scratchpad": lambda x: format_to_openai_tool_messages(
-            x["intermediate_steps"]
-        ),
-        "chat_history": lambda x: x["chat_history"],
-    }
-    | prompt
-    # | prompt_trimmer
-    | model_with_tools
-    | OpenAIToolsAgentOutputParser()
+# Define nodes: these do the work
+builder.add_node("assistant", assistant)
+builder.add_node("tools", ToolNode(tools))
+
+# Define edges: these determine how the control flow moves
+builder.add_edge(START, "assistant")
+builder.add_conditional_edges(
+    "assistant",
+    # If the latest message (result) from assistant is a tool call -> tools_condition routes to tools
+    # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to END
+    tools_condition,
 )
-agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+builder.add_edge("tools", "assistant")
+#builder.add_edge("assistant", END)
 
-# App definition
+memory = MemorySaver()
+react_graph = builder.compile(checkpointer=memory)
+
+# Save graph visualisaiton
+graph_visualisation = react_graph.get_graph(xray=True).draw_mermaid_png()
+with open("output_graph_visualisation.png", "wb") as file:
+    file.write(graph_visualisation)
+#endregion
+
+# # Create prompt
+# prompt = ChatPromptTemplate.from_messages([
+#     ("system", system_prompt),
+#     MessagesPlaceholder(variable_name="chat_history", optional=True),
+#     ("user", "{input}"),
+#     MessagesPlaceholder(variable_name="agent_scratchpad")])
+
+# # Trim prompts
+# def prompt_trimmer(messages: List[Union[HumanMessage, AIMessage, FunctionMessage]]):
+#     """Trims the prompt to a reasonable length."""
+#     return messages[-10:] # Keep last 10 messages
+#     # Keep in mind that when trimming we may want to keep the system message!
+
+# # Create agent
+# agent = (
+#     {
+#         "input": lambda x: x["input"],
+#         "agent_scratchpad": lambda x: format_to_openai_tool_messages(
+#             x["intermediate_steps"]
+#         ),
+#         "chat_history": lambda x: x["chat_history"],
+#     }
+#     | prompt
+#     # | prompt_trimmer
+#     | model_with_tools
+#     | OpenAIToolsAgentOutputParser()
+# )
+# agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+# App definition and authentication
 class User(BaseModel):
     username: str
     email: Union[str, None] = None
@@ -235,18 +263,14 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
 
 class Input(BaseModel):
     """We need to add these input/output schemas because the current AgentExecutor is lacking in schemas."""
-    input: str
-    chat_history: List[Union[HumanMessage, AIMessage, FunctionMessage]] = Field(
-        ...,
-        extra={"widget": {"type": "chat", "input": "input", "output": "output"}},
-    )
+    messages: str
 
-class Output(BaseModel):
-    output: Any
+# class Output(BaseModel):
+#     output: Any
 
 # Let's define the API Handler
 api_handler = APIHandler(
-    agent_executor.with_types(input_type=Input, output_type=Output).with_config(
+        react_graph.with_types(input_type=Input).with_config(
         {"run_name": "agent"}
     ),
     # Namespace for the runnable.
@@ -263,7 +287,7 @@ async def invoke_with_auth(
     """Handle a request."""
     # The API Handler validates the parts of the request
     # that are used by the runnnable (e.g., input, config fields)
-    config = {"configurable": {"user_id": current_user.username}}
+    config = {"configurable": {"user_id": current_user.username, "thread_id": hash(current_user.username)}}
     return await api_handler.invoke(request, server_config=config)
 
 if __name__ == "__main__":

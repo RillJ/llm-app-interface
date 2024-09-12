@@ -3,7 +3,6 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
-from langchain.pydantic_v1 import BaseModel, Field
 from langchain.tools import BaseTool, StructuredTool, tool
 from langchain.chains.query_constructor.schema import AttributeInfo
 
