@@ -16,28 +16,25 @@
 # under the License.
 
 from tools import app_functions
-#from prompts import system_prompt
+from prompts import system_prompt
 
 import os
 import jwt #pyjwt
 import uvicorn
 from dotenv import load_dotenv #python-dotenv
 from passlib.context import CryptContext
-from typing import Any, List, Union, Annotated
+from typing import Any, List, Union, Annotated, TypedDict
 from jwt.exceptions import InvalidTokenError
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from langserve import APIHandler
-from langgraph.graph import MessagesState
-from langchain_core.messages import HumanMessage, SystemMessage, FunctionMessage, AIMessage
-from langgraph.graph import START, END, StateGraph
+from langgraph.graph import START, END, StateGraph, MessagesState, add_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import tools_condition
 from langgraph.prebuilt import ToolNode
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import AnyMessage
 from IPython.display import Image, display
 #from langchain_core.messages import AIMessage, FunctionMessage, HumanMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -47,54 +44,26 @@ from langchain.agents import AgentExecutor
 from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
 from langchain.agents.format_scratchpad.openai_tools import format_to_openai_tool_messages
 
-
 # Get environment variables (API keys and such)
 load_dotenv()
 
 # Create LLM model
 tools = [app_functions]
-model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=False)
+model = ChatOpenAI(model="gpt-4o", temperature=0, streaming=False)
 model_with_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in tools])
 
-# Define prompt
-system_prompt = """
-You are an assistant integrated with various accessibility apps designed to help visually impaired users.
-Your task is to help the user activate the correct function within an app based on their command.
-
-Follow these steps:
-1. Match Function: Identify the app function that best matches the user's command.
-2. Output Format:
-    - Return only the function label in the format: label=<app-label>
-    - If the function of this app has an Extra Feature, follow the instructions and return the results in the format: label=<app-label>; extra=<results>
-    - Do not include any additional information or explanations.
-3. Clarification Loop:
-    - If you are not confident which function matches the command, ask the user for more details.
-    - Continue this process until you can confidently identify the correct function.
-4. Strict Format Requirement: Only return the function label in the specified format. Do not include any other text or explanation.
-
-Example Workflows:
-    User Command: "Can you help me look for the apples?"
-        You found some relevant functions within the app.
-        If confident, respond with: label=<object-recognition>
-        If not confident, ask: "Do you want to find the apple near you or want to navigate to your favorite supermarket?"
-    User Command: "I need 6 apples and 2 packs of milk."
-        You found a relevant function within the app that has an Extra Feature.
-        Respond with: label=<grocery-list>; extra=<[+4]Apple; [+2]Milk>
-    User Command: "I haven't spoken to my dad in a while, can you call him?"
-        You did not find any relevant functions within the app, or the user is asking you something unrelated.
-        Since you are not confident, ask: "At the moment, it seems that I cannot assist you with that. Can you clarify what you want?"
-    User Command: "How are you?"
-        You are here to assist with app functions, not to chat.
-        Respond with: "While I'd love to talk, my job is to assist you with the accessibility app. How can I help you today?"
-"""
-
 #region LangGraph
-# Agents
-def assistant(state: MessagesState):
+# State
+class CustomState(TypedDict):
+    messages: Annotated[list[AnyMessage], add_messages]
+    #app_feedback: str
+
+# Agent
+def assistant(state: CustomState):
    return {"messages": [model_with_tools.invoke([system_prompt] + state["messages"])]}
 
 # Graph
-builder = StateGraph(MessagesState)
+builder = StateGraph(CustomState)
 
 # Define nodes: these do the work
 builder.add_node("assistant", assistant)
@@ -109,7 +78,6 @@ builder.add_conditional_edges(
     tools_condition,
 )
 builder.add_edge("tools", "assistant")
-#builder.add_edge("assistant", END)
 
 memory = MemorySaver()
 react_graph = builder.compile(checkpointer=memory)
