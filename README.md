@@ -17,7 +17,7 @@ This project is a **flexible and intelligent context-aware navigation interface*
 
 ### Prerequisites
 
-- **Python 3.x** installed
+- **Python 3.10+** installed
 - API keys from **LangChain** and **OpenAI**.
 
 ### Installation
@@ -26,14 +26,28 @@ This project is a **flexible and intelligent context-aware navigation interface*
    ```bash
    git clone https://github.com/Gitfoe/llm-app-interface
    cd your-repo-url
-   ```
+   ``` 
 
-2. Install the required Python packages:
+2. Create a virtual Python environment:
+   ```bash
+   python -m venv venv
+   ```
+   Activate the virtual environment:
+   - **On Windows:**
+     ```bash
+     venv\Scripts\activate
+     ```
+   - **On macOS/Linux:**
+     ```bash
+     source venv/bin/activate
+     ```
+
+3. Install the required Python packages:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Set up your environment variables by creating a `.env` file in the project root and filling in the required fields:
+4. Set up your environment variables by creating a `.env` file in the project root and filling in the required fields:
    ```env
    LANGCHAIN_TRACING_V2=true
    LANGCHAIN_API_KEY=your_langchain_api_key_here
@@ -45,6 +59,8 @@ This project is a **flexible and intelligent context-aware navigation interface*
    ```bash
    openssl rand -hex 32
    ```
+
+---
 
 ### Usage
 

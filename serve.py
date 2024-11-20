@@ -29,27 +29,21 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from langserve import APIHandler
-from langgraph.graph import START, END, StateGraph, MessagesState, add_messages
+from langgraph.graph import START, END, StateGraph, add_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import tools_condition
 from langgraph.prebuilt import ToolNode
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AnyMessage
-from IPython.display import Image, display
-#from langchain_core.messages import AIMessage, FunctionMessage, HumanMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from langchain.pydantic_v1 import BaseModel, Field
-#from pydantic.v1 import BaseModel
-from langchain.agents import AgentExecutor
-from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
-from langchain.agents.format_scratchpad.openai_tools import format_to_openai_tool_messages
+from pydantic import BaseModel
 
 # Get environment variables (API keys and such)
 load_dotenv()
 
 # Create LLM model
 tools = [app_functions]
-model = ChatOpenAI(model="gpt-4o", temperature=0, streaming=False)
+model = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=False)
 model_with_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in tools])
 
 #region LangGraph
@@ -83,9 +77,9 @@ memory = MemorySaver()
 react_graph = builder.compile(checkpointer=memory)
 
 # Save graph visualisaiton
-graph_visualisation = react_graph.get_graph(xray=True).draw_mermaid_png()
-with open("output_graph_visualisation.png", "wb") as file:
-    file.write(graph_visualisation)
+# graph_visualisation = react_graph.get_graph(xray=True).draw_mermaid_png()
+# with open("output_graph_visualisation.png", "wb") as file:
+#     file.write(graph_visualisation)
 #endregion
 
 # # Create prompt
@@ -204,6 +198,7 @@ async def get_current_active_user(current_user: Annotated[User, Depends(get_curr
 
 @app.post("/token")
 async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+    # Form data requires "python-multipart" to be installed
     user = authenticate_user(fake_users_db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(
@@ -238,6 +233,7 @@ class Input(BaseModel):
 
 # Let's define the API Handler
 api_handler = APIHandler(
+        # "sse_starlette" must be installed to implement the stream and stream_log endpoints
         react_graph.with_types(input_type=Input).with_config(
         {"run_name": "agent"}
     ),
