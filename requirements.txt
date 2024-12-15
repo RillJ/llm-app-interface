@@ -12,3 +12,4 @@ langchain-chroma
 langserve
 langgraph
 sse-starlette
+ipykernel # for running Jupyter Notebook cells

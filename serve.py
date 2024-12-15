@@ -23,18 +23,18 @@ import jwt #pyjwt
 import uvicorn
 from dotenv import load_dotenv #python-dotenv
 from passlib.context import CryptContext
-from typing import Any, List, Union, Annotated, TypedDict
+from typing import Any, List, Union, Annotated, Optional
 from jwt.exceptions import InvalidTokenError
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from langserve import APIHandler
-from langgraph.graph import START, END, StateGraph, add_messages
+from langgraph.graph import START, END, StateGraph, MessagesState, add_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import tools_condition
 from langgraph.prebuilt import ToolNode
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import SystemMessage, HumanMessage, RemoveMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import BaseModel
 
@@ -46,41 +46,116 @@ tools = [app_functions]
 model = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=False)
 model_with_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in tools])
 
-#region LangGraph
-# State
-class CustomState(TypedDict):
-    messages: Annotated[list[AnyMessage], add_messages]
-    #app_feedback: str
+class CustomState(MessagesState):
+    """
+    Custom state containing the list of messages (inherited)
+    and also a summary of previous messages."""
+    summary: Optional[str] = None
 
-# Agent
+#region Node Definitions
 def assistant(state: CustomState):
-   return {"messages": [model_with_tools.invoke([system_prompt] + state["messages"])]}
+    """
+    Main assistant responsible for operating with the system prompt.
+    """
+    # Get messages summary if it exists
+    summary = state.get("summary", "")
+
+    # If there is a summary, then we add it
+    if summary:
+       system_message = f"Summary of conversation earlier: {summary}"
+       # Append summary to any newer messages
+       messages = [SystemMessage(content=system_message)] + state["messages"]
+    else:
+       messages = state["messages"]
+
+    response = model_with_tools.invoke([system_prompt] + messages)
+    return {"messages": response}
+
+def summarize_conversation(state: CustomState):
+    """
+    Summarize the conversation in 'messages' in the given state.
+    Returns 'summary' and 'messages' keys usable in a state. 
+    """
+    # Try to get a summary from the state
+    summary = state.get("summary," "")
+
+    # If a summary exists, prompt the model to extend it
+    if summary:
+        summary_message = (
+            f"This is the summary of the conversation to date: {summary}\n\n"
+            "Extend the summary by taking into account the new mesages above:"
+        )
+    # If not, prompt the model to create a summary
+    else:
+        summary_message = "Create a summary of the conversation above:"
+    
+    # Add prompt to our history
+    messages = state["messages"] + [HumanMessage(content=summary_message)]
+    response = model.invoke(messages)
+
+    # Delete all but the 2 most recent messages from the state
+    messages = state["messages"]
+    delete_messages = [RemoveMessage(id=m.id) for m in messages[:-2]]
+
+    # Check for any remaining `tool_call` messages and ensure they are followed by `tool` messages
+    while len(messages) > 1 and "tool_call_id" in messages[0]: # If first message is a tool call without a tool response
+        delete_messages.append(RemoveMessage(id=messages[0].id))
+        messages = state["messages"]  # Update message list after deletion
+    return {"summary": response.content, "messages": delete_messages}
+#endregion
+
+#region Edge Definitions
+def should_continue(state: CustomState, messages_key: str = "messages"):
+    """
+    Returns the next node to execute.
+    """
+    messages = state["messages"]
+
+    # If there are no more than 6 messages, then we summarize the conversation
+    if isinstance(state, list):
+        ai_message = state[-1]
+    elif isinstance(state, dict) and (messages := state.get(messages_key, [])):
+        ai_message = messages[-1]
+    elif messages := getattr(state, messages_key, []):
+        ai_message = messages[-1]
+    else:
+        raise ValueError(f"No messages found in input state to tool_edge: {state}")
+    if hasattr(ai_message, "tool_calls") and len(ai_message.tool_calls) > 0:
+        return "tools"
+    elif len(messages) > 1:
+        return "summarize_conversation"
+    # If not, we can end the graph
+    else:
+        return END
+#endregion
 
 # Graph
-builder = StateGraph(CustomState)
+workflow = StateGraph(CustomState)
 
 # Define nodes: these do the work
-builder.add_node("assistant", assistant)
-builder.add_node("tools", ToolNode(tools))
+workflow.add_node("assistant", assistant)
+workflow.add_node("tools", ToolNode(tools))
+workflow.add_node(summarize_conversation)
 
 # Define edges: these determine how the control flow moves
-builder.add_edge(START, "assistant")
-builder.add_conditional_edges(
+workflow.add_edge(START, "assistant")
+workflow.add_conditional_edges(
     "assistant",
     # If the latest message (result) from assistant is a tool call -> tools_condition routes to tools
     # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to END
-    tools_condition,
+    should_continue,
+    #tools_condition
 )
-builder.add_edge("tools", "assistant")
+workflow.add_edge("tools", "assistant")
+workflow.add_edge("summarize_conversation", END)
 
 memory = MemorySaver()
-react_graph = builder.compile(checkpointer=memory)
+react_graph = workflow.compile(checkpointer=memory)
 
 # Save graph visualisaiton
-# graph_visualisation = react_graph.get_graph(xray=True).draw_mermaid_png()
-# with open("output_graph_visualisation.png", "wb") as file:
-#     file.write(graph_visualisation)
-#endregion
+graph_visualisation = react_graph.get_graph(xray=True).draw_mermaid_png()
+with open("output_graph_visualisation.png", "wb") as file:
+    file.write(graph_visualisation)
 
 # # Create prompt
 # prompt = ChatPromptTemplate.from_messages([
@@ -227,6 +302,7 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
 class Input(BaseModel):
     """We need to add these input/output schemas because the current AgentExecutor is lacking in schemas."""
     messages: str
+    #summary: Optional[str] = None # Not necessary to be input from the client
 
 # class Output(BaseModel):
 #     output: Any
