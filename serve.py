@@ -34,7 +34,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import tools_condition
 from langgraph.prebuilt import ToolNode
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage, RemoveMessage
+from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage, RemoveMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import BaseModel
 
@@ -71,13 +71,14 @@ def assistant(state: CustomState):
     response = model_with_tools.invoke([system_prompt] + messages)
     return {"messages": response}
 
-def summarize_conversation(state: CustomState):
+def summarize_conversation(state: CustomState, messages_to_keep = 2):
     """
     Summarize the conversation in 'messages' in the given state.
     Returns 'summary' and 'messages' keys usable in a state. 
     """
+    print_prefix = f"{summarize_conversation.__name__}) >"
     # Try to get a summary from the state
-    summary = state.get("summary," "")
+    summary = state.get("summary", "")
 
     # If a summary exists, prompt the model to extend it
     if summary:
@@ -89,19 +90,38 @@ def summarize_conversation(state: CustomState):
     else:
         summary_message = "Create a summary of the conversation above:"
     
-    # Add prompt to our history
-    messages = state["messages"] + [HumanMessage(content=summary_message)]
-    response = model.invoke(messages)
+    print(f"{print_prefix} Invoking summarization model...")
+    
+    messages = state["messages"][:] # Create a copy of the messages list
+    messages_with_summary_message = messages + [HumanMessage(content=summary_message)] # Add prompt to our history
+    response = model.invoke(messages_with_summary_message) # Summarize
 
-    # Delete all but the 2 most recent messages from the state
-    messages = state["messages"]
-    delete_messages = [RemoveMessage(id=m.id) for m in messages[:-2]]
+    # Delete previous messages akin to `messages_to_keep`
+    delete_messages = []
 
-    # Check for any remaining `tool_call` messages and ensure they are followed by `tool` messages
-    while len(messages) > 1 and "tool_call_id" in messages[0]: # If first message is a tool call without a tool response
-        delete_messages.append(RemoveMessage(id=messages[0].id))
-        messages = state["messages"]  # Update message list after deletion
+    # Remove tool-related messages to prevent OpenAI errors when first message is tool message
+    while len(messages) > messages_to_keep and is_tool_related_message(messages[-messages_to_keep]):
+        to_delete = messages.pop(-messages_to_keep)
+        delete_messages.append(RemoveMessage(id=to_delete.id))
+        print(f"{print_prefix} Deleted tool-related message: {to_delete}")
+        messages_to_keep -= 1
+
+    # Remove all remaining messages except the last `messages_to_keep`
+    for message in messages[:-messages_to_keep]:
+        delete_messages.append(RemoveMessage(id=message.id))
+        print(f"{print_prefix} Deleted message: {message}")
+
     return {"summary": response.content, "messages": delete_messages}
+#endregion
+
+#region Node Helper Functions
+def is_tool_related_message(message):
+    """
+    Check if a message is either an AIMessage with tool calls or a ToolMessage.
+    """
+    return (
+        isinstance(message, AIMessage) and message.tool_calls
+    ) or isinstance(message, ToolMessage)
 #endregion
 
 #region Edge Definitions
