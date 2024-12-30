@@ -16,7 +16,7 @@
 # under the License.
 
 from tools import app_functions
-from prompts import system_prompt
+from prompts import assistant_prompt, app_call_prompt
 
 import os
 import jwt #pyjwt
@@ -68,7 +68,7 @@ def assistant(state: CustomState):
     else:
        messages = state["messages"]
 
-    response = model_with_tools.invoke([system_prompt] + messages)
+    response = model_with_tools.invoke([assistant_prompt] + messages)
     return {"messages": response}
 
 def summarize_conversation(state: CustomState, messages_to_keep = 2):
@@ -112,6 +112,28 @@ def summarize_conversation(state: CustomState, messages_to_keep = 2):
         print(f"{print_prefix} Deleted message: {message}")
 
     return {"summary": response.content, "messages": delete_messages}
+
+def app_call(state: CustomState):
+    """
+    Invokes the model for processing the app's returned input.
+    """
+    print_prefix = f"{app_call.__name__}) >"
+    messages = state.get("messages", "")
+    last_user_message = messages[0]
+
+    if last_user_message.startswith("<App>"):
+        print(f"{print_prefix} App message found. Instructing LLM.")
+        retriever = app_functions.app_functions_retriever(1) # Get only the 1 most relevant
+        doc = retriever.invoke(messages[-1].content) # Get the app function's description
+        response = model.invoke(app_call_prompt + doc + "This is what the app responded with: " + messages[0].content)
+        return {"messages": response}
+    elif last_user_message.startswith("<User>"):
+        print(f"{print_prefix} User message found. Not performing any action.")
+        return {"messages": messages}
+    else:
+        print(f"{print_prefix} Could not identify message type. Not performing any action.")
+    return {"messages": messages}
+
 #endregion
 
 #region Node Helper Functions
@@ -125,13 +147,12 @@ def is_tool_related_message(message):
 #endregion
 
 #region Edge Definitions
-def should_continue(state: CustomState, messages_key: str = "messages"):
+def should_summarize(state: CustomState, messages_key: str = "messages"):
     """
-    Returns the next node to execute.
+    Checks if the messages should be summarized, and if so, route accordingly.
     """
     messages = state["messages"]
 
-    # If there are no more than 6 messages, then we summarize the conversation
     if isinstance(state, list):
         ai_message = state[-1]
     elif isinstance(state, dict) and (messages := state.get(messages_key, [])):
@@ -140,13 +161,29 @@ def should_continue(state: CustomState, messages_key: str = "messages"):
         ai_message = messages[-1]
     else:
         raise ValueError(f"No messages found in input state to tool_edge: {state}")
+    
+    # Check if there's a tool call, and if so, go to the tools node
     if hasattr(ai_message, "tool_calls") and len(ai_message.tool_calls) > 0:
         return "tools"
-    elif len(messages) > 1:
+    # If there are more than 5 messages, then we summarize the conversation
+    elif len(messages) > 5:
         return "summarize_conversation"
     # If not, we can end the graph
     else:
         return END
+    
+def should_execute_app_call(state: CustomState, messages_key: str = "messages"):
+    """
+    Checks if the message was an app call, and if so, route accordingly.
+    """
+    messages = state["messages"]
+    
+    print(messages[0].content)
+    if messages[0].content.startswith("<App>"):
+        return "app_call"
+    else:
+        return "assistant"
+
 #endregion
 
 # Graph
@@ -154,20 +191,25 @@ workflow = StateGraph(CustomState)
 
 # Define nodes: these do the work
 workflow.add_node("assistant", assistant)
+workflow.add_node("app_call", app_call)
 workflow.add_node("tools", ToolNode(tools))
 workflow.add_node(summarize_conversation)
 
 # Define edges: these determine how the control flow moves
-workflow.add_edge(START, "assistant")
+workflow.add_conditional_edges(
+    START,
+    should_execute_app_call,
+)
 workflow.add_conditional_edges(
     "assistant",
     # If the latest message (result) from assistant is a tool call -> tools_condition routes to tools
     # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to END
-    should_continue,
+    should_summarize,
     #tools_condition
 )
 workflow.add_edge("tools", "assistant")
 workflow.add_edge("summarize_conversation", END)
+workflow.add_edge("app_call", END)
 
 memory = MemorySaver()
 react_graph = workflow.compile(checkpointer=memory)

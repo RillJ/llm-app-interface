@@ -21,8 +21,9 @@ docs = [
     Document(
         page_content="""
         A list where a user can add and remove products from that they want to aquire at a supermarket.
-        The app will send you the current grocery list as additional data.
+        The app will return the current grocery list as additional data.
         Return the product(s) that need to be added, appended with either + (to add) or - (to remove), including the amount.
+        Interpret based on the user's input and current grocery list 
         Example: [+4]Jonagold Apple; [-1]Quaker Oats""",
         metadata={"app_id": 1, "type": "function", "label": "grocery-list", "additional-data-required": True},
     ),
@@ -42,13 +43,13 @@ docs = [
     ),
 ]
 
-additional_data_descriptions = {
-    "app_id": 1,
-    "label": "grocery-list",
-    "instruction": """
-        Extra Feature: Return the product(s) that need to be added, appended with either + (to add) or - (to remove), including the amount.
-        Example: [+4]Jonagold Apple; [-1]Quaker Oats"""
-}
+# additional_data_descriptions = {
+#     "app_id": 1,
+#     "label": "grocery-list",
+#     "instruction": """
+#         Extra Feature: Return the product(s) that need to be added, appended with either + (to add) or - (to remove), including the amount.
+#         Example: [+4]Jonagold Apple; [-1]Quaker Oats"""
+# }
 
 # metadata_field_info = [
 #     AttributeInfo(
@@ -76,22 +77,42 @@ additional_data_descriptions = {
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 vectorstore = Chroma.from_documents(docs, embeddings)
 
-app_descriptions_retriever = vectorstore.as_retriever(
-    search_type="similarity",
-    search_kwargs={"k": 3, "filter": {"type": "app"}},
-)
+def app_descriptions_retriever(k = 3):
+    app_descriptions_retriever = vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": k, "filter": {"type": "app"}},
+    )
+    return app_descriptions_retriever
 
-app_functions_retriever = vectorstore.as_retriever(
-    search_type="similarity",
-    search_kwargs={"k": 3, "filter": {"type": "function"}},
-)
+def app_functions_retriever(k = 3):
+    app_functions_retriever = vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": 3, "filter": {"type": "function"}},
+    )
+    return app_functions_retriever
 
 @tool
 def app_functions(query: str) -> str:
-    """Gives the most relevant app functions including descriptions of it's purpose and accompanying metadata based on the input string."""
-    docsList = app_functions_retriever.invoke(query)
-    strList =[]
+    """
+    Gives the most relevant app functions, including descriptions of it's purpose and accompanying metadata, based on the input string.
+    """
+    retriever = app_functions_retriever(3)
+    docsList = retriever.invoke(query)
+    strList = []
     # Export the document content as well as its metadata
     for doc in docsList:
         strList.append({"document" : doc.page_content ,"metadata" : doc.metadata})
     return json.dumps(strList)
+
+# @tool
+# def determine_input_type(query: str) -> str:
+#     """
+#     Determines whether the command received from the accessibility app is a user or app message.
+#     System messages: A natural language command from the user, asking to perform a specific task or function.
+#     App messages: Data returned by the app to complete a specific instruction sent by you.
+#     """
+#     if str.startswith("<User>"):
+#         return "user"
+#     elif str.startswith("<App>"):
+#         return "app"
+#     return "undeterminable"
