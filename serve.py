@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from tools import app_functions
+from tools import app_functions, get_document_content
 from prompts import assistant_prompt, app_call_prompt
 
 import os
@@ -23,7 +23,7 @@ import jwt #pyjwt
 import uvicorn
 from dotenv import load_dotenv #python-dotenv
 from passlib.context import CryptContext
-from typing import Any, List, Union, Annotated, Optional
+from typing import Any, List, Union, Annotated, Optional, Literal
 from jwt.exceptions import InvalidTokenError
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
@@ -57,6 +57,7 @@ def assistant(state: CustomState):
     """
     Main assistant responsible for operating with the system prompt.
     """
+    function_name = assistant.__name__
     # Get messages summary if it exists
     summary = state.get("summary", "")
 
@@ -69,6 +70,7 @@ def assistant(state: CustomState):
        messages = state["messages"]
 
     response = model_with_tools.invoke([assistant_prompt] + messages)
+    print(f"{function_name}: Response: {response.content}")
     return {"messages": response}
 
 def summarize_conversation(state: CustomState, messages_to_keep = 2):
@@ -76,7 +78,7 @@ def summarize_conversation(state: CustomState, messages_to_keep = 2):
     Summarize the conversation in 'messages' in the given state.
     Returns 'summary' and 'messages' keys usable in a state. 
     """
-    print_prefix = f"{summarize_conversation.__name__}) >"
+    function_name = summarize_conversation.__name__
     # Try to get a summary from the state
     summary = state.get("summary", "")
 
@@ -90,26 +92,26 @@ def summarize_conversation(state: CustomState, messages_to_keep = 2):
     else:
         summary_message = "Create a summary of the conversation above:"
     
-    print(f"{print_prefix} Invoking summarization model...")
+    print(f"{function_name}: Invoking summarization model...")
     
     messages = state["messages"][:] # Create a copy of the messages list
     messages_with_summary_message = messages + [HumanMessage(content=summary_message)] # Add prompt to our history
     response = model.invoke(messages_with_summary_message) # Summarize
 
-    # Delete previous messages akin to `messages_to_keep`
+    # Delete previous messages akin to "messages_to_keep"
     delete_messages = []
 
     # Remove tool-related messages to prevent OpenAI errors when first message is tool message
     while len(messages) > messages_to_keep and is_tool_related_message(messages[-messages_to_keep]):
         to_delete = messages.pop(-messages_to_keep)
         delete_messages.append(RemoveMessage(id=to_delete.id))
-        print(f"{print_prefix} Deleted tool-related message: {to_delete}")
+        print(f"{function_name}: Deleted tool-related message: {to_delete}")
         messages_to_keep -= 1
 
-    # Remove all remaining messages except the last `messages_to_keep`
+    # Remove all remaining messages except the last "messages_to_keep"
     for message in messages[:-messages_to_keep]:
         delete_messages.append(RemoveMessage(id=message.id))
-        print(f"{print_prefix} Deleted message: {message}")
+        print(f"{function_name}: Deleted message: {message}")
 
     return {"summary": response.content, "messages": delete_messages}
 
@@ -117,21 +119,51 @@ def app_call(state: CustomState):
     """
     Invokes the model for processing the app's returned input.
     """
-    print_prefix = f"{app_call.__name__}) >"
+    function_name = app_call.__name__
     messages = state.get("messages", "")
-    last_user_message = messages[0]
 
-    if last_user_message.startswith("<App>"):
-        print(f"{print_prefix} App message found. Instructing LLM.")
-        retriever = app_functions.app_functions_retriever(1) # Get only the 1 most relevant
-        doc = retriever.invoke(messages[-1].content) # Get the app function's description
-        response = model.invoke(app_call_prompt + doc + "This is what the app responded with: " + messages[0].content)
-        return {"messages": response}
-    elif last_user_message.startswith("<User>"):
-        print(f"{print_prefix} User message found. Not performing any action.")
-        return {"messages": messages}
-    else:
-        print(f"{print_prefix} Could not identify message type. Not performing any action.")
+    # Find the two last user messages (<App> or <User>) and last AI message
+    last_user_messages = []
+    last_ai_message = None
+    
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            last_user_messages.append(message.content)
+            if len(last_user_messages) == 2 and last_ai_message:
+                break
+        elif isinstance(message, AIMessage) and not last_ai_message:
+            last_ai_message = message.content
+    print(f"{function_name}: Last user messages: {last_user_messages}")
+    print(f"{function_name}: Last AI message: {last_ai_message}")
+
+    # Check if the last message was an app message
+    try:
+        if last_user_messages[0].startswith("<App>"):
+            print(f"{function_name}: App message found. Instructing LLM.")
+
+            additional_prompt = f"""
+            The description of the function that was called and additional data was required for is outlined as follows:
+            {get_document_content(last_ai_message)}
+            
+            The user's prompt instructed as follows:
+            {last_user_messages[1]}
+
+            The app's additional data response was:
+            {last_user_messages[0]}
+            """
+
+            full_prompt = app_call_prompt + additional_prompt
+            print(f"{function_name}: Full prompt: {full_prompt}")
+            response = model.invoke(full_prompt)
+            
+            return {"messages": response}
+        elif last_user_messages[0].startswith("<User>"):
+            print(f"{function_name}: User message found. Not performing any action.")
+        else:
+            print(f"{function_name}: Could not identify user message type. Not performing any action.")
+    except Exception as e:
+        print(f"{function_name}: Could not identify message. Not performing any action. Error: {e}")
+
     return {"messages": messages}
 
 #endregion
@@ -151,8 +183,10 @@ def should_summarize(state: CustomState, messages_key: str = "messages"):
     """
     Checks if the messages should be summarized, and if so, route accordingly.
     """
+    function_name = should_summarize.__name__
     messages = state["messages"]
 
+    # Code from tools_condition
     if isinstance(state, list):
         ai_message = state[-1]
     elif isinstance(state, dict) and (messages := state.get(messages_key, [])):
@@ -162,27 +196,35 @@ def should_summarize(state: CustomState, messages_key: str = "messages"):
     else:
         raise ValueError(f"No messages found in input state to tool_edge: {state}")
     
+    print(f"{function_name}: Messages length: {len(messages)}")
     # Check if there's a tool call, and if so, go to the tools node
     if hasattr(ai_message, "tool_calls") and len(ai_message.tool_calls) > 0:
-        return "tools"
-    # If there are more than 5 messages, then we summarize the conversation
-    elif len(messages) > 5:
-        return "summarize_conversation"
+        routing = "tools"
+        print(f"{function_name}: Tool call detected. Routing to {routing}.")
+    # If there are more than X messages, then we summarize the conversation
+    elif len(messages) > 10:
+        routing = "summarize_conversation"
+        print(f"{function_name}: More than 10 messages detected. Routing to {routing}.")
     # If not, we can end the graph
     else:
-        return END
+        routing = END
+        print(f"{function_name}: No tool call detected and no need to summarize. Routing to {routing}.")
+    return routing
     
-def should_execute_app_call(state: CustomState, messages_key: str = "messages"):
+def should_execute_app_call(state: CustomState):
     """
     Checks if the message was an app call, and if so, route accordingly.
     """
+    function_name = should_execute_app_call.__name__
     messages = state["messages"]
     
-    print(messages[0].content)
-    if messages[0].content.startswith("<App>"):
-        return "app_call"
+    if messages[-1].content.startswith("<App>"):
+        routing = "app_call"
+        print(f"{function_name}: App call detected. Routing to {routing}.")
     else:
-        return "assistant"
+        routing = "assistant"
+        print(f"{function_name}: No app call detected. Routing to {routing}.")
+    return routing
 
 #endregion
 
@@ -199,13 +241,21 @@ workflow.add_node(summarize_conversation)
 workflow.add_conditional_edges(
     START,
     should_execute_app_call,
+    {
+        "assistant": "assistant",
+        "app_call": "app_call"
+    }
 )
 workflow.add_conditional_edges(
     "assistant",
     # If the latest message (result) from assistant is a tool call -> tools_condition routes to tools
     # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to END
     should_summarize,
-    #tools_condition
+    {
+        "tools": "tools",
+        "summarize_conversation": "summarize_conversation",
+        END: END
+    }
 )
 workflow.add_edge("tools", "assistant")
 workflow.add_edge("summarize_conversation", END)
