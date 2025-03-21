@@ -23,6 +23,7 @@ docs = [
         A list where a user can add and remove products from that they want to aquire at a supermarket.
         The app will return the current grocery list as additional data.
         Return the product(s) that need to be added or removed, prefixed with either + (to add) or - (to remove), including the amount.
+        Or if the user wants to know what's on the grocery list, then name the items that are on the grocery list in natural language.
         Interpret what to add or remove based on the user's input and current grocery list sent as additional data. 
         
         Example:

@@ -69,11 +69,13 @@ def assistant(state: CustomState):
     else:
        messages = state["messages"]
 
-    response = model_with_tools.invoke([assistant_prompt] + messages)
+    response = model_with_tools.invoke([SystemMessage(content=assistant_prompt)] +
+                                       [SystemMessage(content="Here is the history of the chat so far: ")] +
+                                       messages)
     print(f"{function_name}: Response: {response.content}")
     return {"messages": response}
 
-def summarize_conversation(state: CustomState, messages_to_keep = 2):
+def summarize_conversation(state: CustomState, messages_to_keep = 5):
     """
     Summarize the conversation in 'messages' in the given state.
     Returns 'summary' and 'messages' keys usable in a state. 
@@ -145,7 +147,8 @@ def app_call(state: CustomState):
             The description of the function that was called and additional data was required for is outlined as follows:
             {get_document_content(last_ai_message)}
             
-            The user's prompt instructed as follows:
+            The last two prompts instructed as follows:
+            {last_user_messages[0]}
             {last_user_messages[1]}
 
             The app's additional data response was:
@@ -155,7 +158,8 @@ def app_call(state: CustomState):
             full_prompt = app_call_prompt + additional_prompt
             print(f"{function_name}: Full prompt: {full_prompt}")
             response = model.invoke(full_prompt)
-            
+            print(f"{function_name}: Response: {response.content}")
+
             return {"messages": response}
         elif last_user_messages[0].startswith("<User>"):
             print(f"{function_name}: User message found. Not performing any action.")
@@ -179,7 +183,7 @@ def is_tool_related_message(message):
 #endregion
 
 #region Edge Definitions
-def should_summarize(state: CustomState, messages_key: str = "messages"):
+def should_summarize(state: CustomState, messages_key: str = "messages", summarize_at = 27):
     """
     Checks if the messages should be summarized, and if so, route accordingly.
     """
@@ -201,10 +205,10 @@ def should_summarize(state: CustomState, messages_key: str = "messages"):
     if hasattr(ai_message, "tool_calls") and len(ai_message.tool_calls) > 0:
         routing = "tools"
         print(f"{function_name}: Tool call detected. Routing to {routing}.")
-    # If there are more than X messages, then we summarize the conversation
-    elif len(messages) > 10:
+    # If there are more than 'summarize_at' messages, then we summarize the conversation
+    elif len(messages) > summarize_at:
         routing = "summarize_conversation"
-        print(f"{function_name}: More than 10 messages detected. Routing to {routing}.")
+        print(f"{function_name}: More than {summarize_at} messages detected. Routing to {routing}.")
     # If not, we can end the graph
     else:
         routing = END
@@ -443,4 +447,4 @@ async def invoke_with_auth(
     return await api_handler.invoke(request, server_config=config)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="localhost", port=8000)
+    uvicorn.run(app, host="192.168.50.21", port=8001, log_level="info")
