@@ -1,5 +1,6 @@
 import json
 from dotenv import load_dotenv
+from datetime import datetime
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
@@ -39,9 +40,24 @@ docs = [
     ),
     Document(
         page_content="""
-        Allows the user to save their favorite supermarkets and start GPS navigation to this supermarket.
-        Extra Feature: If the user mentions a name of a supermarket, return the name of the supermarket.""",
-        metadata={"app_id": 1, "type": "function", "label": "navigation", "additional-data-required": False},
+        This group of functions manages a list of saved supermarket locations and supports navigation to them.
+        The app will return the saved supermarkets and their metadata in JSON as additional data.
+
+        The user may ask to:
+        - remove a supermarket from their saved place list;
+        - view the current place list;
+        - get directions to a supermarket;
+        - check opening hours;
+        - find out whether a supermarket is currently open or closed.
+
+        When the user wants to remove a supermarket from the list, respond only with the relevant place ID(s),
+        using the exact format shown below, without adding any extra words, introductions, or explanations before or after the response:
+        Format (use exactly as shown): <LLM>[-1]ChIJgUbEo8cfqokR5lP9_Wh_DaM; [-1]EicxMyBNYXJrZXQgU3QsIFdpbG1pbmd0b24sIE5DIDI4NDAxLCBVU0E
+
+        Otherwise, respond to the user in clear, natural language paragraphs, using only the alphabet (A-Z), numbers (0-9), and spaces.
+        Avoid using symbols, markdown, or bullet points, and focus on providing information in a straightforward, conversational way.
+        """,
+        metadata={"app_id": 1, "type": "function", "label": "navigation", "additional-data-required": True},
     ),
     Document(
         page_content="Can identify products in a supermarket and hands of the user in real time to help find the right products.",
@@ -127,6 +143,15 @@ def app_functions(query: str) -> str:
         strList.append({"document" : doc.page_content ,"metadata" : doc.metadata})
     return json.dumps(strList)
 
+@tool
+def get_current_datetime() -> str:
+    """
+    Returns the current date and time, including the day of the week,
+    in a human-readable format. 
+    """
+    now = datetime.now()
+    formatted_time = now.strftime("%A, %Y-%m-%d %H:%M:%S")
+    return f"The current date and time is (YY-MM-DD, 24h): {formatted_time}"
 # @tool
 # def determine_input_type(query: str) -> str:
 #     """

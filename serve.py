@@ -15,8 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from tools import app_functions, get_document_content
-from prompts import assistant_prompt, app_call_prompt
+from tools import app_functions, get_document_content, get_current_datetime
+from prompts import assistant_prompt, app_call_prompt, summary_prompt
 
 import os
 import jwt #pyjwt
@@ -42,9 +42,12 @@ from pydantic import BaseModel
 load_dotenv()
 
 # Create LLM model
-tools = [app_functions]
-model = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=False)
-model_with_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in tools])
+assistant_tools = [app_functions, get_current_datetime]
+app_call_tools = [get_current_datetime]
+simple_model = ChatOpenAI(model="gpt-4o-mini", temperature=0.5, top_p=0.5, streaming=False)
+model = ChatOpenAI(model="gpt-4o", temperature=0.3, top_p=0.2, streaming=False)
+model_w_assistant_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in assistant_tools])
+model_w_app_call_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in app_call_tools])
 
 class CustomState(MessagesState):
     """
@@ -69,10 +72,9 @@ def assistant(state: CustomState):
     else:
        messages = state["messages"]
 
-    response = model_with_tools.invoke([SystemMessage(content=assistant_prompt)] +
-                                       [SystemMessage(content="Here is the history of the chat so far: ")] +
-                                       messages)
+    response = model_w_assistant_tools.invoke([SystemMessage(content=assistant_prompt)] + messages)
     print(f"{function_name}: Response: {response.content}")
+
     return {"messages": response}
 
 def summarize_conversation(state: CustomState, messages_to_keep = 5):
@@ -84,21 +86,25 @@ def summarize_conversation(state: CustomState, messages_to_keep = 5):
     # Try to get a summary from the state
     summary = state.get("summary", "")
 
+
     # If a summary exists, prompt the model to extend it
     if summary:
         summary_message = (
             f"This is the summary of the conversation to date: {summary}\n\n"
-            "Extend the summary by taking into account the new mesages above:"
+             "Extend the summary by taking into account the new mesages below:"
         )
     # If not, prompt the model to create a summary
     else:
-        summary_message = "Create a summary of the conversation above:"
+        summary_message = "\n\nCreate a summary of the conversation below:"
     
     print(f"{function_name}: Invoking summarization model...")
     
     messages = state["messages"][:] # Create a copy of the messages list
-    messages_with_summary_message = messages + [HumanMessage(content=summary_message)] # Add prompt to our history
-    response = model.invoke(messages_with_summary_message) # Summarize
+    messages_with_summary_message = ([SystemMessage(content=summary_prompt)] + 
+                                     [HumanMessage(content=summary_message)] + 
+                                      messages) # Add prompt to our history
+    
+    response = simple_model.invoke(messages_with_summary_message) # Summarize
 
     # Delete previous messages akin to "messages_to_keep"
     delete_messages = []
@@ -147,17 +153,20 @@ def app_call(state: CustomState):
             The description of the function that was called and additional data was required for is outlined as follows:
             {get_document_content(last_ai_message)}
             
-            The last two prompts instructed as follows:
+            The last two messages received from the app (either from the app's backend or the user) are:
             {last_user_messages[0]}
             {last_user_messages[1]}
 
             The app's additional data response was:
             {last_user_messages[0]}
+
+            If the additional data response was empty, the app didn't provide any information. This is the most up-to-date information.
             """
 
             full_prompt = app_call_prompt + additional_prompt
             print(f"{function_name}: Full prompt: {full_prompt}")
-            response = model.invoke(full_prompt)
+
+            response = model_w_app_call_tools.invoke([SystemMessage(full_prompt)] + messages)
             print(f"{function_name}: Response: {response.content}")
 
             return {"messages": response}
@@ -183,7 +192,7 @@ def is_tool_related_message(message):
 #endregion
 
 #region Edge Definitions
-def should_summarize(state: CustomState, messages_key: str = "messages", summarize_at = 27):
+def should_summarize(state: CustomState, messages_key: str = "messages", summarize_at = 15):
     """
     Checks if the messages should be summarized, and if so, route accordingly.
     """
@@ -201,9 +210,9 @@ def should_summarize(state: CustomState, messages_key: str = "messages", summari
         raise ValueError(f"No messages found in input state to tool_edge: {state}")
     
     print(f"{function_name}: Messages length: {len(messages)}")
-    # Check if there's a tool call, and if so, go to the tools node
+    # Check if there's a tool call, and if so, go to the assistant tools node
     if hasattr(ai_message, "tool_calls") and len(ai_message.tool_calls) > 0:
-        routing = "tools"
+        routing = "assistant_tools"
         print(f"{function_name}: Tool call detected. Routing to {routing}.")
     # If there are more than 'summarize_at' messages, then we summarize the conversation
     elif len(messages) > summarize_at:
@@ -228,8 +237,15 @@ def should_execute_app_call(state: CustomState):
     else:
         routing = "assistant"
         print(f"{function_name}: No app call detected. Routing to {routing}.")
+    
     return routing
 
+def app_call_tools_condition(state) -> str:
+    """
+    Wrap tools_condition to redirect to 'app_call_tools' instead of 'tools'.
+    """
+    result = tools_condition(state)
+    return "app_call_tools" if result == "tools" else result
 #endregion
 
 # Graph
@@ -238,8 +254,9 @@ workflow = StateGraph(CustomState)
 # Define nodes: these do the work
 workflow.add_node("assistant", assistant)
 workflow.add_node("app_call", app_call)
-workflow.add_node("tools", ToolNode(tools))
-workflow.add_node(summarize_conversation)
+workflow.add_node("assistant_tools", ToolNode(assistant_tools))
+workflow.add_node("app_call_tools", ToolNode(app_call_tools))
+workflow.add_node("summarize_conversation", summarize_conversation)
 
 # Define edges: these determine how the control flow moves
 workflow.add_conditional_edges(
@@ -252,18 +269,24 @@ workflow.add_conditional_edges(
 )
 workflow.add_conditional_edges(
     "assistant",
-    # If the latest message (result) from assistant is a tool call -> tools_condition routes to tools
-    # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to END
     should_summarize,
     {
-        "tools": "tools",
+        "assistant_tools": "assistant_tools",
         "summarize_conversation": "summarize_conversation",
         END: END
     }
 )
-workflow.add_edge("tools", "assistant")
+workflow.add_conditional_edges(
+    "app_call",
+    app_call_tools_condition,
+    {
+        "app_call_tools": "app_call_tools",
+        END: END
+    }
+)
+workflow.add_edge("assistant_tools", "assistant")
+workflow.add_edge("app_call_tools", "app_call")
 workflow.add_edge("summarize_conversation", END)
-workflow.add_edge("app_call", END)
 
 memory = MemorySaver()
 react_graph = workflow.compile(checkpointer=memory)
