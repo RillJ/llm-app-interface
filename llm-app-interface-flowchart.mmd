@@ -1,0 +1,38 @@
+flowchart TD
+  %% Styling
+  classDef user fill:#E3F2FD,stroke:#90CAF9;
+  classDef assistant fill:#E8F5E9,stroke:#A5D6A7;
+  classDef decision fill:#FFF8E1,stroke:#FFD54F;
+  classDef app fill:#F3E5F5,stroke:#CE93D8;
+  classDef tool fill:#FBE9E7,stroke:#FFAB91;
+
+  %% User interaction
+  U[User Input] --> A1[**Agent**<br>Analyze intent & context]
+
+  %% Assistant context
+  H1[Context Summary<br>& Chat History] --> A1
+  A1 --> T1[**Similarity Search**<br>Top 3 relevant functions] --> A1
+
+  %% Ambiguity check
+  A1 --> D1{Is user intent<br>ambiguous?}
+  D1 -- Yes --> C1[Ask clarifying<br>question] --> U
+  D1 -- No --> A2[Determine function<br>label & data needs]
+
+  %% Additional data check
+  A2 --> D2{Additional data<br>required?}
+  D2 -- Yes --> R1[Request app data] --> APPD[**App**<br>Send current state/data]
+  D2 -- No --> AT
+
+  %% App execution
+  APPD --> AT[Follow function instructions]
+
+  %% Finalization paths
+  AT -- Needs App Execution --> APP_ACK[Applies changes] --> U2[Return result to user]
+  AT -- No Execution Needed --> U2
+
+  %% Class tags
+  class U,U2 user
+  class A1,A2,C1,R1,R2,CALL,AT assistant
+  class D1,D2 decision
+  class APPD,APP_ACK app
+  class T1,H1 tool

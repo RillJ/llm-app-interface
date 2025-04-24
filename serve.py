@@ -15,15 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from tools import app_functions
-from prompts import system_prompt
+from tools import app_functions, get_document_content, get_current_datetime
+from prompts import assistant_prompt, app_call_prompt, summary_prompt
 
 import os
 import jwt #pyjwt
 import uvicorn
 from dotenv import load_dotenv #python-dotenv
 from passlib.context import CryptContext
-from typing import Any, List, Union, Annotated, TypedDict
+from typing import Any, List, Union, Annotated, Optional, Literal
 from jwt.exceptions import InvalidTokenError
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
@@ -34,59 +34,267 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import tools_condition
 from langgraph.prebuilt import ToolNode
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AnyMessage
-from IPython.display import Image, display
-#from langchain_core.messages import AIMessage, FunctionMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage, RemoveMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from langchain.pydantic_v1 import BaseModel, Field
-#from pydantic.v1 import BaseModel
-from langchain.agents import AgentExecutor
-from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
-from langchain.agents.format_scratchpad.openai_tools import format_to_openai_tool_messages
+from pydantic import BaseModel
 
 # Get environment variables (API keys and such)
 load_dotenv()
 
 # Create LLM model
-tools = [app_functions]
-model = ChatOpenAI(model="gpt-4o", temperature=0, streaming=False)
-model_with_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in tools])
+assistant_tools = [app_functions, get_current_datetime]
+app_call_tools = [get_current_datetime]
+simple_model = ChatOpenAI(model="gpt-4o-mini", temperature=0.5, top_p=0.5, streaming=False)
+model = ChatOpenAI(model="gpt-4o", temperature=0.3, top_p=0.2, streaming=False)
+model_w_assistant_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in assistant_tools])
+model_w_app_call_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in app_call_tools])
 
-#region LangGraph
-# State
-class CustomState(TypedDict):
-    messages: Annotated[list[AnyMessage], add_messages]
-    #app_feedback: str
+class CustomState(MessagesState):
+    """
+    Custom state containing the list of messages (inherited)
+    and also a summary of previous messages."""
+    summary: Optional[str] = None
 
-# Agent
+#region Node Definitions
 def assistant(state: CustomState):
-   return {"messages": [model_with_tools.invoke([system_prompt] + state["messages"])]}
+    """
+    Main assistant responsible for operating with the system prompt.
+    """
+    function_name = assistant.__name__
+    # Get messages summary if it exists
+    summary = state.get("summary", "")
+
+    # If there is a summary, then we add it
+    if summary:
+       system_message = f"Summary of conversation earlier: {summary}"
+       # Append summary to any newer messages
+       messages = [SystemMessage(content=system_message)] + state["messages"]
+    else:
+       messages = state["messages"]
+
+    response = model_w_assistant_tools.invoke([SystemMessage(content=assistant_prompt)] + messages)
+    print(f"{function_name}: Response: {response.content}")
+
+    return {"messages": response}
+
+def summarize_conversation(state: CustomState, messages_to_keep = 5):
+    """
+    Summarize the conversation in 'messages' in the given state.
+    Returns 'summary' and 'messages' keys usable in a state. 
+    """
+    function_name = summarize_conversation.__name__
+    # Try to get a summary from the state
+    summary = state.get("summary", "")
+
+
+    # If a summary exists, prompt the model to extend it
+    if summary:
+        summary_message = (
+            f"This is the summary of the conversation to date: {summary}\n\n"
+             "Extend the summary by taking into account the new mesages below:"
+        )
+    # If not, prompt the model to create a summary
+    else:
+        summary_message = "\n\nCreate a summary of the conversation below:"
+    
+    print(f"{function_name}: Invoking summarization model...")
+    
+    messages = state["messages"][:] # Create a copy of the messages list
+    messages_with_summary_message = ([SystemMessage(content=summary_prompt)] + 
+                                     [HumanMessage(content=summary_message)] + 
+                                      messages) # Add prompt to our history
+    
+    response = simple_model.invoke(messages_with_summary_message) # Summarize
+
+    # Delete previous messages akin to "messages_to_keep"
+    delete_messages = []
+
+    # Remove tool-related messages to prevent OpenAI errors when first message is tool message
+    while len(messages) > messages_to_keep and is_tool_related_message(messages[-messages_to_keep]):
+        to_delete = messages.pop(-messages_to_keep)
+        delete_messages.append(RemoveMessage(id=to_delete.id))
+        print(f"{function_name}: Deleted tool-related message: {to_delete}")
+        messages_to_keep -= 1
+
+    # Remove all remaining messages except the last "messages_to_keep"
+    for message in messages[:-messages_to_keep]:
+        delete_messages.append(RemoveMessage(id=message.id))
+        print(f"{function_name}: Deleted message: {message}")
+
+    return {"summary": response.content, "messages": delete_messages}
+
+def app_call(state: CustomState):
+    """
+    Invokes the model for processing the app's returned input.
+    """
+    function_name = app_call.__name__
+    messages = state.get("messages", "")
+
+    # Find the two last user messages (<App> or <User>) and last AI message
+    last_user_messages = []
+    last_ai_message = None
+    
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            last_user_messages.append(message.content)
+            if len(last_user_messages) == 2 and last_ai_message:
+                break
+        elif isinstance(message, AIMessage) and not last_ai_message:
+            last_ai_message = message.content
+    print(f"{function_name}: Last user messages: {last_user_messages}")
+    print(f"{function_name}: Last AI message: {last_ai_message}")
+
+    # Check if the last message was an app message
+    try:
+        if last_user_messages[0].startswith("<App>"):
+            print(f"{function_name}: App message found. Instructing LLM.")
+
+            additional_prompt = f"""
+            The description of the function that was called and additional data was required for is outlined as follows:
+            {get_document_content(last_ai_message)}
+            
+            The last two messages received from the app (either from the app's backend or the user) are:
+            {last_user_messages[0]}
+            {last_user_messages[1]}
+
+            The app's additional data response was:
+            {last_user_messages[0]}
+
+            If the additional data response was empty, the app didn't provide any information. This is the most up-to-date information.
+            """
+
+            full_prompt = app_call_prompt + additional_prompt
+            print(f"{function_name}: Full prompt: {full_prompt}")
+
+            response = model_w_app_call_tools.invoke([SystemMessage(full_prompt)] + messages)
+            print(f"{function_name}: Response: {response.content}")
+
+            return {"messages": response}
+        elif last_user_messages[0].startswith("<User>"):
+            print(f"{function_name}: User message found. Not performing any action.")
+        else:
+            print(f"{function_name}: Could not identify user message type. Not performing any action.")
+    except Exception as e:
+        print(f"{function_name}: Could not identify message. Not performing any action. Error: {e}")
+
+    return {"messages": messages}
+
+#endregion
+
+#region Node Helper Functions
+def is_tool_related_message(message):
+    """
+    Check if a message is either an AIMessage with tool calls or a ToolMessage.
+    """
+    return (
+        isinstance(message, AIMessage) and message.tool_calls
+    ) or isinstance(message, ToolMessage)
+#endregion
+
+#region Edge Definitions
+def should_summarize(state: CustomState, messages_key: str = "messages", summarize_at = 15):
+    """
+    Checks if the messages should be summarized, and if so, route accordingly.
+    """
+    function_name = should_summarize.__name__
+    messages = state["messages"]
+
+    # Code from tools_condition
+    if isinstance(state, list):
+        ai_message = state[-1]
+    elif isinstance(state, dict) and (messages := state.get(messages_key, [])):
+        ai_message = messages[-1]
+    elif messages := getattr(state, messages_key, []):
+        ai_message = messages[-1]
+    else:
+        raise ValueError(f"No messages found in input state to tool_edge: {state}")
+    
+    print(f"{function_name}: Messages length: {len(messages)}")
+    # Check if there's a tool call, and if so, go to the assistant tools node
+    if hasattr(ai_message, "tool_calls") and len(ai_message.tool_calls) > 0:
+        routing = "assistant_tools"
+        print(f"{function_name}: Tool call detected. Routing to {routing}.")
+    # If there are more than 'summarize_at' messages, then we summarize the conversation
+    elif len(messages) > summarize_at:
+        routing = "summarize_conversation"
+        print(f"{function_name}: More than {summarize_at} messages detected. Routing to {routing}.")
+    # If not, we can end the graph
+    else:
+        routing = END
+        print(f"{function_name}: No tool call detected and no need to summarize. Routing to {routing}.")
+    return routing
+    
+def should_execute_app_call(state: CustomState):
+    """
+    Checks if the message was an app call, and if so, route accordingly.
+    """
+    function_name = should_execute_app_call.__name__
+    messages = state["messages"]
+    
+    if messages[-1].content.startswith("<App>"):
+        routing = "app_call"
+        print(f"{function_name}: App call detected. Routing to {routing}.")
+    else:
+        routing = "assistant"
+        print(f"{function_name}: No app call detected. Routing to {routing}.")
+    
+    return routing
+
+def app_call_tools_condition(state) -> str:
+    """
+    Wrap tools_condition to redirect to 'app_call_tools' instead of 'tools'.
+    """
+    result = tools_condition(state)
+    return "app_call_tools" if result == "tools" else result
+#endregion
 
 # Graph
-builder = StateGraph(CustomState)
+workflow = StateGraph(CustomState)
 
 # Define nodes: these do the work
-builder.add_node("assistant", assistant)
-builder.add_node("tools", ToolNode(tools))
+workflow.add_node("assistant", assistant)
+workflow.add_node("app_call", app_call)
+workflow.add_node("assistant_tools", ToolNode(assistant_tools))
+workflow.add_node("app_call_tools", ToolNode(app_call_tools))
+workflow.add_node("summarize_conversation", summarize_conversation)
 
 # Define edges: these determine how the control flow moves
-builder.add_edge(START, "assistant")
-builder.add_conditional_edges(
-    "assistant",
-    # If the latest message (result) from assistant is a tool call -> tools_condition routes to tools
-    # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to END
-    tools_condition,
+workflow.add_conditional_edges(
+    START,
+    should_execute_app_call,
+    {
+        "assistant": "assistant",
+        "app_call": "app_call"
+    }
 )
-builder.add_edge("tools", "assistant")
+workflow.add_conditional_edges(
+    "assistant",
+    should_summarize,
+    {
+        "assistant_tools": "assistant_tools",
+        "summarize_conversation": "summarize_conversation",
+        END: END
+    }
+)
+workflow.add_conditional_edges(
+    "app_call",
+    app_call_tools_condition,
+    {
+        "app_call_tools": "app_call_tools",
+        END: END
+    }
+)
+workflow.add_edge("assistant_tools", "assistant")
+workflow.add_edge("app_call_tools", "app_call")
+workflow.add_edge("summarize_conversation", END)
 
 memory = MemorySaver()
-react_graph = builder.compile(checkpointer=memory)
+react_graph = workflow.compile(checkpointer=memory)
 
 # Save graph visualisaiton
 graph_visualisation = react_graph.get_graph(xray=True).draw_mermaid_png()
 with open("output_graph_visualisation.png", "wb") as file:
     file.write(graph_visualisation)
-#endregion
 
 # # Create prompt
 # prompt = ChatPromptTemplate.from_messages([
@@ -204,6 +412,7 @@ async def get_current_active_user(current_user: Annotated[User, Depends(get_curr
 
 @app.post("/token")
 async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+    # Form data requires "python-multipart" to be installed
     user = authenticate_user(fake_users_db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(
@@ -232,12 +441,14 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
 class Input(BaseModel):
     """We need to add these input/output schemas because the current AgentExecutor is lacking in schemas."""
     messages: str
+    #summary: Optional[str] = None # Not necessary to be input from the client
 
 # class Output(BaseModel):
 #     output: Any
 
 # Let's define the API Handler
 api_handler = APIHandler(
+        # "sse_starlette" must be installed to implement the stream and stream_log endpoints
         react_graph.with_types(input_type=Input).with_config(
         {"run_name": "agent"}
     ),
@@ -259,4 +470,4 @@ async def invoke_with_auth(
     return await api_handler.invoke(request, server_config=config)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="localhost", port=8000)
+    uvicorn.run(app, host="localhost", port=8000, log_level="info")
