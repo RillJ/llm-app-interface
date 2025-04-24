@@ -30,7 +30,7 @@ docs = [
         Example:
         The app might send the current grocery list as: [5]Elstar Apple; [4]Banana; [1]Quaker Oats
         The user might say: "I need 6 more apples and 2 packs of milk, but don't need the oats anymore."
-        You will respond with: [+4]Elstar Apple; [2]Milk, [-1]Quaker Oats
+        You will respond with: [+4]Elstar Apple; [2]Milk; [-1]Quaker Oats
         """,
         metadata={"app_id": 1, "type": "function", "label": "grocery-list", "additional-data-required": True},
     ),

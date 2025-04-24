@@ -470,4 +470,4 @@ async def invoke_with_auth(
     return await api_handler.invoke(request, server_config=config)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="192.168.50.21", port=8001, log_level="info")
+    uvicorn.run(app, host="localhost", port=8000, log_level="info")
