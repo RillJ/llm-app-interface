@@ -77,8 +77,45 @@ docs = [
         metadata={"app_id": 1, "type": "function", "label": "navigation", "additional-data-required": True},
     ),
     Document(
-        page_content="Can identify products in a supermarket and hands of the user in real time to help find the right products.",
-        metadata={"app_id": 1, "type": "function", "label": "object-and-hand-recognition", "additional-data-required": False},
+        page_content="""
+        A feature that helps users select an object they want to grasp.
+        It can identify products and hands of the user in real time and guide the user to this object after selection.
+        
+        The system will provide a list of available objects that can be detected and grasped, along with their corresponding IDs.
+        Only respond with the exact object ID from the provided list, without any additional text or explanation.
+
+        Example:
+        User: "I want to grab a cup"
+        Response: 42
+
+        If the requested object is not in the provided list, ask the user to choose from the available objects.
+        """,
+        metadata={"app_id": 1, "type": "function", "label": "object-and-hand-recognition", "additional-data-required": True},
+    ),
+    Document(
+        page_content="""
+        Command interface for the spatial navigation guidance system, specifically the trial control interface.
+        This function allows users to control trial behaviour and provide feedback on the system's performance.
+        Based on the user's input, respond with one of the following single character commands:
+
+        Commands:
+        s - Start a new trial
+        y - Confirm successful grasp
+        n - Indicate failed grasp
+        t - Wrong target was grasped  
+        f - System/experimenter failure
+        q - Quit the experiment
+        c - Cancel current trial
+
+        Do not add explanations or additional text, just return the single command character.
+
+        Example:
+        User: "I successfully grabbed the object"
+        Response: y
+
+        If the user's input doesn't match any command, ask them to clarify using the valid commands from the provided list.
+        """,
+        metadata={"app_id": 1, "type": "function", "label": "command-interface", "additional-data-required": True},
     ),
 ]
 

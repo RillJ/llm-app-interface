@@ -44,8 +44,8 @@ load_dotenv()
 # Create LLM model
 assistant_tools = [app_functions, get_current_datetime]
 app_call_tools = [get_current_datetime]
-simple_model = ChatOpenAI(model="gpt-4o-mini", temperature=0.5, top_p=0.5, streaming=False)
-model = ChatOpenAI(model="gpt-4o", temperature=0.3, top_p=0.2, streaming=False)
+simple_model = ChatOpenAI(model="gpt-4.1-mini", streaming=False)
+model = ChatOpenAI(model="gpt-4.1", temperature=0.2, top_p=0.1, streaming=False)
 model_w_assistant_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in assistant_tools])
 model_w_app_call_tools = model.bind(tools=[convert_to_openai_tool(tool) for tool in app_call_tools])
 
@@ -77,7 +77,7 @@ def assistant(state: CustomState):
 
     return {"messages": response}
 
-def summarize_conversation(state: CustomState, messages_to_keep = 5):
+def summarize_conversation(state: CustomState, messages_to_keep = 10):
     """
     Summarize the conversation in 'messages' in the given state.
     Returns 'summary' and 'messages' keys usable in a state. 
@@ -192,7 +192,7 @@ def is_tool_related_message(message):
 #endregion
 
 #region Edge Definitions
-def should_summarize(state: CustomState, messages_key: str = "messages", summarize_at = 15):
+def should_summarize(state: CustomState, messages_key: str = "messages", summarize_at = 50):
     """
     Checks if the messages should be summarized, and if so, route accordingly.
     """
